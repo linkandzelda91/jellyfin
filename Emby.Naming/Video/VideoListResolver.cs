@@ -1,9 +1,11 @@
 using System;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.IO;
 using System.Linq;
 using System.Text.RegularExpressions;
 using Emby.Naming.Common;
+using Jellyfin.Data.Enums;
 using Jellyfin.Extensions;
 using MediaBrowser.Model.IO;
 
@@ -28,8 +30,15 @@ namespace Emby.Naming.Video
         /// <param name="supportMultiVersion">Indication we should consider multi-versions of content.</param>
         /// <param name="parseName">Whether to parse the name or use the filename.</param>
         /// <param name="libraryRoot">Top-level folder for the containing library.</param>
+        /// <param name="collectionType">The type of media.</param>
         /// <returns>Returns enumerable of <see cref="VideoInfo"/> which groups files together when related.</returns>
-        public static IReadOnlyList<VideoInfo> Resolve(IReadOnlyList<VideoFileInfo> videoInfos, NamingOptions namingOptions, bool supportMultiVersion = true, bool parseName = true, string? libraryRoot = "")
+        public static IReadOnlyList<VideoInfo> Resolve(
+            IReadOnlyList<VideoFileInfo> videoInfos,
+            NamingOptions namingOptions,
+            bool supportMultiVersion = true,
+            bool parseName = true,
+            string? libraryRoot = "",
+            CollectionType? collectionType = 0)
         {
             // Filter out all extras, otherwise they could cause stacks to not be resolved
             // See the unit test TestStackedWithTrailer
@@ -85,7 +94,17 @@ namespace Emby.Naming.Video
 
             if (supportMultiVersion)
             {
-                list = GetVideosGroupedByVersion(list, namingOptions);
+                switch (collectionType)
+                {
+                    case CollectionType.movies:
+                        // movie logic
+                        break;
+                    case CollectionType.tvshows:
+                        // shows logic
+                        break;
+                    default:
+                        throw new InvalidOperationException($"Collection Type {collectionType} not valid for Multi Versioning");
+                }
             }
 
             // Whatever files are left, just add them

@@ -226,9 +226,10 @@ namespace Emby.Server.Implementations.Library.Resolvers.Movies
                 return ResolveVideos<Movie>(parent, files, true, collectionType, true);
             }
 
+            // First, lets just see what happens if we turn it on
             if (collectionType == CollectionType.tvshows)
             {
-                return ResolveVideos<Episode>(parent, files, false, collectionType, true);
+                return ResolveVideos<Episode>(parent, files, true, collectionType, true);
             }
 
             return null;
@@ -273,8 +274,14 @@ namespace Emby.Server.Implementations.Library.Resolvers.Movies
                 .Select(i => VideoResolver.Resolve(i.FullName, i.IsDirectory, NamingOptions, parseName, parent.ContainingFolderPath))
                 .Where(f => f is not null)
                 .ToList();
-
-            var resolverResult = VideoListResolver.Resolve(videoInfos, NamingOptions, supportMultiEditions, parseName, parent.ContainingFolderPath);
+            // And here.we.go
+            var resolverResult = VideoListResolver.Resolve(
+            videoInfos,
+            NamingOptions,
+            supportMultiEditions,
+            parseName,
+            parent.ContainingFolderPath,
+            collectionType);
 
             var result = new MultiItemResolverResult
             {
