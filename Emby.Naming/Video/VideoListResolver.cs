@@ -8,6 +8,7 @@ using Emby.Naming.Common;
 using Jellyfin.Data.Enums;
 using Jellyfin.Extensions;
 using MediaBrowser.Model.IO;
+using Microsoft.AspNetCore.Mvc.Diagnostics;
 
 namespace Emby.Naming.Video
 {
@@ -97,10 +98,10 @@ namespace Emby.Naming.Video
                 switch (collectionType)
                 {
                     case CollectionType.movies:
-                        // movie logic
+                        GetMoviesGroupedByVersion(list, namingOptions);
                         break;
                     case CollectionType.tvshows:
-                        // shows logic
+                        GetShowsGroupedByVersion(list, namingOptions);
                         break;
                     default:
                         throw new InvalidOperationException($"Collection Type {collectionType} not valid for Multi Versioning");
@@ -118,7 +119,7 @@ namespace Emby.Naming.Video
             return list;
         }
 
-        private static List<VideoInfo> GetVideosGroupedByVersion(List<VideoInfo> videos, NamingOptions namingOptions)
+        private static List<VideoInfo> GetMoviesGroupedByVersion(List<VideoInfo> videos, NamingOptions namingOptions)
         {
             if (videos.Count == 0)
             {
@@ -142,7 +143,7 @@ namespace Emby.Naming.Video
                     continue;
                 }
 
-                if (!IsEligibleForMultiVersion(folderName, video.Files[0].FileNameWithoutExtension, namingOptions))
+                if (!IsMovieEligibleForMultiVersion(folderName, video.Files[0].FileNameWithoutExtension, namingOptions))
                 {
                     return videos;
                 }
@@ -205,7 +206,7 @@ namespace Emby.Naming.Video
             return true;
         }
 
-        private static bool IsEligibleForMultiVersion(ReadOnlySpan<char> folderName, ReadOnlySpan<char> testFilename, NamingOptions namingOptions)
+        private static bool IsMovieEligibleForMultiVersion(ReadOnlySpan<char> folderName, ReadOnlySpan<char> testFilename, NamingOptions namingOptions)
         {
             if (!testFilename.StartsWith(folderName, StringComparison.OrdinalIgnoreCase))
             {
@@ -228,6 +229,43 @@ namespace Emby.Naming.Video
             return testFilename.IsEmpty
                    || testFilename[0] == '-'
                    || CheckMultiVersionRegex().IsMatch(testFilename);
+        }
+
+        private static List<VideoInfo> GetShowsGroupedByVersion(List<VideoInfo> videos, NamingOptions namingOptions)
+        {
+            if (videos.Count == 0)
+            {
+                return videos;
+            }
+
+            if (!HaveSameYear(videos))
+            {
+                return videos;
+            }
+
+            // Cannot use Span inside local functions and delegates thus we cannot use LINQ here nor merge with the above [if]
+           // VideoInfo? primary = null;
+            for (var i = 0; i < videos.Count; i++)
+            {
+                var video = videos[i];
+                if (video.ExtraType is not null)
+                {
+                    continue;
+                }
+
+                // this probably needs to be moved as it's checking an entire season folder, currently even one episode is not eligible it'll return the list and exit.
+                if (!IsShowEligibleForMultiVersion(video.Files[0].FileNameWithoutExtension, namingOptions))
+                {
+                    return videos;
+                }
+            }
+
+            return videos;
+        }
+
+        private static bool IsShowEligibleForMultiVersion(ReadOnlySpan<char> testFilename, NamingOptions namingOptions)
+        {
+            return false;
         }
     }
 }
