@@ -3,12 +3,14 @@ using System.Collections.Generic;
 using System.ComponentModel;
 using System.IO;
 using System.Linq;
+using System.Reflection.Metadata.Ecma335;
 using System.Text.RegularExpressions;
 using Emby.Naming.Common;
 using Jellyfin.Data.Enums;
 using Jellyfin.Extensions;
 using MediaBrowser.Model.IO;
 using Microsoft.AspNetCore.Mvc.Diagnostics;
+using Microsoft.AspNetCore.Routing.Constraints;
 using Microsoft.EntityFrameworkCore.Migrations.Operations;
 
 namespace Emby.Naming.Video
@@ -23,6 +25,9 @@ namespace Emby.Naming.Video
 
         [GeneratedRegex(@"^\[([^]]*)\]")]
         private static partial Regex CheckMultiVersionRegex();
+
+        [GeneratedRegex(@"^(?:.*?\s*-\s*)?S\d+E\d+$", RegexOptions.IgnoreCase)]
+        private static partial Regex EpisodePrimarySimpleRegex();
 
         /// <summary>
         /// Resolves alternative versions and extras from list of video files.
@@ -234,32 +239,53 @@ namespace Emby.Naming.Video
 
         private static List<VideoInfo> GetShowsGroupedByVersion(List<VideoInfo> videos, NamingOptions namingOptions)
         {
-            // Require at least 2 file to exist if we're going to try and process them as versions of the same episode.
+            // if we dont have at least two video files, then there's no point in going further.
             if (videos.Count <= 1)
             {
                 return videos;
             }
 
-            var consolidatedEpisodes = new List<VideoInfo>();
+            var episodesWithSortedVersions = new List<VideoInfo>();
             VideoInfo? primary = null;
             while (videos.Count > 0)
             {
                 foreach (var video in videos)
                 {
-                    // check against valid regex patterns for what would be a primary video, eg not an alternate version
                     if (IsEpisodePrimary(video))
                     {
                         primary = video;
-                        continue;
+                        break;
                     }
                 }
 
-                primary ??= videos[0];
+                // If there is no primary video set after scanning, the files are not named correctly for versioning.
+                if (primary is null)
+                {
+                    return videos;
+                }
+
                 videos.Remove(primary);
-                consolidatedEpisodes.Add(FindAndSortAlternateEpisodes(primary, videos));
+                episodesWithSortedVersions.Add(FindAndSortAlternateEpisodeVersions(primary, videos));
             }
 
-//            if (videos.Count > 1)
+            return episodesWithSortedVersions;
+        }
+
+        private static bool IsEpisodePrimary(VideoInfo video)
+        {
+            // This would probably be easier if video.Name was used, but currently the tryclean string regexes chop out some resolutions, and changing them risks breaking other things
+            // so we must use the raw VideoFileInfo.FileNameWithoutExtension
+            var match = EpisodePrimarySimpleRegex().IsMatch(video.Files[0].FileNameWithoutExtension.Trim());
+
+            return match;
+        }
+
+// Placeholder
+        private static VideoInfo FindAndSortAlternateEpisodeVersions(VideoInfo primary, List<VideoInfo> videos)
+        {
+            return primary;
+// comment
+//           if (videos.Count > 1)
 //            {
 //                var groups = videos.GroupBy(x => ResolutionRegex().IsMatch(x.Files[0].FileNameWithoutExtension)).ToList();
 //                videos.Clear();
@@ -288,18 +314,6 @@ namespace Emby.Naming.Video
 //
 //            list[0].AlternateVersions = videos.Select(x => x.Files[0]).ToArray();
 //            list[0].Name = folderName.ToString();
-
-            return videos;
-        }
-
-        private static bool IsEpisodePrimary(VideoInfo video)
-        {
-            return false;
-        }
-
-        private static VideoInfo FindAndSortAlternateEpisodes(VideoInfo primary, List<VideoInfo> videos)
-        {
-            return primary;
         }
     }
 }
