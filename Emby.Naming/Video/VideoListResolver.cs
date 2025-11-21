@@ -9,6 +9,7 @@ using Jellyfin.Data.Enums;
 using Jellyfin.Extensions;
 using MediaBrowser.Model.IO;
 using Microsoft.AspNetCore.Mvc.Diagnostics;
+using Microsoft.EntityFrameworkCore.Migrations.Operations;
 
 namespace Emby.Naming.Video
 {
@@ -98,10 +99,10 @@ namespace Emby.Naming.Video
                 switch (collectionType)
                 {
                     case CollectionType.movies:
-                        GetMoviesGroupedByVersion(list, namingOptions);
+                        list = GetMoviesGroupedByVersion(list, namingOptions);
                         break;
                     case CollectionType.tvshows:
-                        GetShowsGroupedByVersion(list, namingOptions);
+                        list = GetShowsGroupedByVersion(list, namingOptions);
                         break;
                     default:
                         throw new InvalidOperationException($"Collection Type {collectionType} not valid for Multi Versioning");
@@ -233,39 +234,72 @@ namespace Emby.Naming.Video
 
         private static List<VideoInfo> GetShowsGroupedByVersion(List<VideoInfo> videos, NamingOptions namingOptions)
         {
-            if (videos.Count == 0)
+            // Require at least 2 file to exist if we're going to try and process them as versions of the same episode.
+            if (videos.Count <= 1)
             {
                 return videos;
             }
 
-            if (!HaveSameYear(videos))
+            var consolidatedEpisodes = new List<VideoInfo>();
+            VideoInfo? primary = null;
+            while (videos.Count > 0)
             {
-                return videos;
-            }
-
-            // Cannot use Span inside local functions and delegates thus we cannot use LINQ here nor merge with the above [if]
-           // VideoInfo? primary = null;
-            for (var i = 0; i < videos.Count; i++)
-            {
-                var video = videos[i];
-                if (video.ExtraType is not null)
+                foreach (var video in videos)
                 {
-                    continue;
+                    // check against valid regex patterns for what would be a primary video, eg not an alternate version
+                    if (IsEpisodePrimary(video))
+                    {
+                        primary = video;
+                        continue;
+                    }
                 }
 
-                // this probably needs to be moved as it's checking an entire season folder, currently even one episode is not eligible it'll return the list and exit.
-                if (!IsShowEligibleForMultiVersion(video.Files[0].FileNameWithoutExtension, namingOptions))
-                {
-                    return videos;
-                }
+                primary ??= videos[0];
+                videos.Remove(primary);
+                consolidatedEpisodes.Add(FindAndSortAlternateEpisodes(primary, videos));
             }
+
+//            if (videos.Count > 1)
+//            {
+//                var groups = videos.GroupBy(x => ResolutionRegex().IsMatch(x.Files[0].FileNameWithoutExtension)).ToList();
+//                videos.Clear();
+//                foreach (var group in groups)
+//                {
+//                    if (group.Key)
+//                    {
+//                        videos.InsertRange(0, group
+//                            .OrderByDescending(x => ResolutionRegex().Match(x.Files[0].FileNameWithoutExtension.ToString()).Value, new AlphanumericComparator())
+//                            .ThenBy(x => x.Files[0].FileNameWithoutExtension.ToString(), new AlphanumericComparator()));
+//                    }
+//                    else
+//                    {
+//                        videos.AddRange(group.OrderBy(x => x.Files[0].FileNameWithoutExtension.ToString(), new AlphanumericComparator()));
+//                    }
+//                }
+//            }
+//
+//            primary ??= videos[0];
+//            videos.Remove(primary);
+//
+//            var list = new List<VideoInfo>
+//            {
+//                primary
+//            };
+//
+//            list[0].AlternateVersions = videos.Select(x => x.Files[0]).ToArray();
+//            list[0].Name = folderName.ToString();
 
             return videos;
         }
 
-        private static bool IsShowEligibleForMultiVersion(ReadOnlySpan<char> testFilename, NamingOptions namingOptions)
+        private static bool IsEpisodePrimary(VideoInfo video)
         {
             return false;
+        }
+
+        private static VideoInfo FindAndSortAlternateEpisodes(VideoInfo primary, List<VideoInfo> videos)
+        {
+            return primary;
         }
     }
 }
