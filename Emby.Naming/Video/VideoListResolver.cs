@@ -253,33 +253,34 @@ namespace Emby.Naming.Video
             }
 
             var episodesWithUnsortedVersions = new List<VideoInfo>();
-            // Setting this to Match.Empty so compiler doesn't get mad about
-            // using it in the return statement later.
-            Match multiVersionMatch = Match.Empty;
 
-            // This looks weird, but I have good intentions.
-            // After finding at least one video file that could be
-            // a version, grab any other versions we can and stuff them into
-            // a new VideoInfo object, then remove all those versions
-            // from videos. I felt like i needed multiple loops to do this
-            // and I can't modify the videos object inside the loop, and even if
-            // I could it wouldn't be safe.
-            // This restarts the foreach loop anytime we call the
-            // method that will modify videos.
-            while (videos.Count > 0)
+            Match multiVersionMatch;
+            int i = 0;
+            while (i < videos.Count)
             {
-                 foreach (var video in videos)
-                 {
-                     multiVersionMatch = CheckEpisodeMultiVersionRegex().Match(video.Files[0].FileNameWithoutExtension.ToString());
-                     if (multiVersionMatch.Success)
-                     {
-                         episodesWithUnsortedVersions.Add(GetCompleteEpisodeWithUnsortedVersions(video, videos, multiVersionMatch, logger));
-                         break;
-                     }
-                 }
+                var video = videos[i];
+                // A match here is not a guarantee that we have a multi version situation,
+                // because server admins sometimes use " - " to separate episode
+                // information like a title. But we need to pick
+                // a specific episode to start working on, so find one that
+                // *could* be a multi version, and process it
+                multiVersionMatch = CheckEpisodeMultiVersionRegex().Match(video.Files[0].FileNameWithoutExtension.ToString());
+                if (multiVersionMatch.Success)
+                {
+                    episodesWithUnsortedVersions.Add(GetCompleteEpisodeWithUnsortedVersions(video, videos, multiVersionMatch, logger));
+                    // Do not increment i here. The helper method removed items from 'videos',
+                    // so the list has shifted. We need to check the item at the current index again.
+                }
+                else
+                {
+                    i++;
+                }
             }
 
-            return multiVersionMatch.Success ? SortEpisodeVersions(episodesWithUnsortedVersions) : videos;
+            // Add any remaining videos that were not grouped
+            episodesWithUnsortedVersions.AddRange(videos);
+
+            return SortEpisodeVersions(episodesWithUnsortedVersions);
         }
 
         private static VideoInfo GetCompleteEpisodeWithUnsortedVersions(VideoInfo video, List<VideoInfo> videos, Match parsedEpisodeFilename, ILogger? logger)
