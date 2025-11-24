@@ -12,6 +12,7 @@ using MediaBrowser.Model.IO;
 using Microsoft.AspNetCore.Mvc.Diagnostics;
 using Microsoft.AspNetCore.Routing.Constraints;
 using Microsoft.EntityFrameworkCore.Migrations.Operations;
+using Microsoft.VisualBasic;
 
 namespace Emby.Naming.Video
 {
@@ -24,10 +25,12 @@ namespace Emby.Naming.Video
         private static partial Regex ResolutionRegex();
 
         [GeneratedRegex(@"^\[([^]]*)\]")]
-        private static partial Regex CheckMultiVersionRegex();
+        private static partial Regex CheckMovieMultiVersionRegex();
 
-        [GeneratedRegex(@"^(?:.*?\s*-\s*)?S\d+E\d+$", RegexOptions.IgnoreCase)]
-        private static partial Regex EpisodePrimarySimpleRegex();
+        [GeneratedRegex(
+            @"^(?<baseEpisode>.+) - (?:\[(?<Version>.+)\]|(?<Version>(?!s\d{2}e\d{2}$)[^\[\]]+))$",
+            RegexOptions.IgnoreCase)]
+        private static partial Regex CheckEpisodeMultiVersionRegex();
 
         /// <summary>
         /// Resolves alternative versions and extras from list of video files.
@@ -234,7 +237,7 @@ namespace Emby.Naming.Video
             // The CleanStringParser should have removed common keywords etc.
             return testFilename.IsEmpty
                    || testFilename[0] == '-'
-                   || CheckMultiVersionRegex().IsMatch(testFilename);
+                   || CheckMovieMultiVersionRegex().IsMatch(testFilename);
         }
 
         private static List<VideoInfo> GetShowsGroupedByVersion(List<VideoInfo> videos, NamingOptions namingOptions)
@@ -245,45 +248,68 @@ namespace Emby.Naming.Video
                 return videos;
             }
 
-            var episodesWithSortedVersions = new List<VideoInfo>();
-            VideoInfo? primary = null;
+            var episodesWithUnsortedVersions = new List<VideoInfo>();
+            // Setting this to Match.Empty so compiler doesn't get mad about
+            // using it in the return statement later.
+            Match multiVersionMatch = Match.Empty;
+
+            // This looks weird, but I have good intentions.
+            // After finding at least one video file that could be
+            // a version, grab any other versions we can and stuff them into
+            // a new VideoInfo object, then remove all those versions
+            // from videos. I felt like i needed multiple loops to do this
+            // and I can't modify the videos object inside the loop, and even if
+            // I could it wouldn't be safe.
+            // This restarts the foreach loop anytime we call the
+            // method that will modify videos.
             while (videos.Count > 0)
             {
-                foreach (var video in videos)
-                {
-                    if (IsEpisodePrimary(video))
-                    {
-                        primary = video;
-                        break;
-                    }
-                }
-
-                // If there is no primary video set after scanning, the files are not named correctly for versioning.
-                if (primary is null)
-                {
-                    return videos;
-                }
-
-                videos.Remove(primary);
-                episodesWithSortedVersions.Add(FindAndSortAlternateEpisodeVersions(primary, videos));
+                 foreach (var video in videos)
+                 {
+                     multiVersionMatch = CheckEpisodeMultiVersionRegex().Match(video.Files[0].FileNameWithoutExtension.ToString());
+                     if (multiVersionMatch.Success)
+                     {
+                         episodesWithUnsortedVersions.Add(GetCompleteEpisodeWithUnsortedVersions(video, videos, multiVersionMatch));
+                         break;
+                     }
+                 }
             }
 
-            return episodesWithSortedVersions;
+            return multiVersionMatch.Success ? SortEpisodeVersions(episodesWithUnsortedVersions) : videos;
         }
 
-        private static bool IsEpisodePrimary(VideoInfo video)
+        private static VideoInfo GetCompleteEpisodeWithUnsortedVersions(VideoInfo video, List<VideoInfo> videos, Match parsedEpisodeFilename)
         {
-            // This would probably be easier if video.Name was used, but currently the tryclean string regexes chop out some resolutions, and changing them risks breaking other things
-            // so we must use the raw VideoFileInfo.FileNameWithoutExtension
-            var match = EpisodePrimarySimpleRegex().IsMatch(video.Files[0].FileNameWithoutExtension.Trim());
+            // TODO: check for more than 2 alternate versions and log warning if found, possible incompatible file naming scheme.
+            var baseEpisodeName = parsedEpisodeFilename.Groups["baseEpisode"].Value;
 
-            return match;
+            var matchingVideos = videos
+                .Where(v => v.Files[0].FileNameWithoutExtension.Contains(baseEpisodeName, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+
+            var matchingFiles = matchingVideos
+                .SelectMany(v => v.Files)
+                .ToList();
+
+            var episodeWithUnsortedVersionFiles = new VideoInfo(video.Name)
+            {
+                Year = video.Year,
+                Files = matchingFiles
+            };
+
+            foreach (var matchingVideo in matchingVideos)
+            {
+                videos.Remove(matchingVideo);
+            }
+
+            return episodeWithUnsortedVersionFiles;
         }
 
-// Placeholder
-        private static VideoInfo FindAndSortAlternateEpisodeVersions(VideoInfo primary, List<VideoInfo> videos)
+        private static List<VideoInfo> SortEpisodeVersions(List<VideoInfo> episodes)
         {
-            return primary;
+            return episodes;
+        }
+
 // comment
 //           if (videos.Count > 1)
 //            {
@@ -314,6 +340,5 @@ namespace Emby.Naming.Video
 //
 //            list[0].AlternateVersions = videos.Select(x => x.Files[0]).ToArray();
 //            list[0].Name = folderName.ToString();
-        }
     }
 }
