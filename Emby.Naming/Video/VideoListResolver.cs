@@ -12,6 +12,7 @@ using MediaBrowser.Model.IO;
 using Microsoft.AspNetCore.Mvc.Diagnostics;
 using Microsoft.AspNetCore.Routing.Constraints;
 using Microsoft.EntityFrameworkCore.Migrations.Operations;
+using Microsoft.Extensions.Logging;
 using Microsoft.VisualBasic;
 
 namespace Emby.Naming.Video
@@ -41,6 +42,7 @@ namespace Emby.Naming.Video
         /// <param name="parseName">Whether to parse the name or use the filename.</param>
         /// <param name="libraryRoot">Top-level folder for the containing library.</param>
         /// <param name="collectionType">The type of media.</param>
+        /// <param name="logger">Optional logger for diagnostic messages.</param>
         /// <returns>Returns enumerable of <see cref="VideoInfo"/> which groups files together when related.</returns>
         public static IReadOnlyList<VideoInfo> Resolve(
             IReadOnlyList<VideoFileInfo> videoInfos,
@@ -48,7 +50,8 @@ namespace Emby.Naming.Video
             bool supportMultiVersion = true,
             bool parseName = true,
             string? libraryRoot = "",
-            CollectionType? collectionType = 0)
+            CollectionType? collectionType = 0,
+            ILogger? logger = null)
         {
             // Filter out all extras, otherwise they could cause stacks to not be resolved
             // See the unit test TestStackedWithTrailer
@@ -104,13 +107,14 @@ namespace Emby.Naming.Video
 
             if (supportMultiVersion)
             {
+                // TODO: music videos need to be supported.
                 switch (collectionType)
                 {
                     case CollectionType.movies:
                         list = GetMoviesGroupedByVersion(list, namingOptions);
                         break;
                     case CollectionType.tvshows:
-                        list = GetShowsGroupedByVersion(list, namingOptions);
+                        list = GetShowsGroupedByVersion(list, namingOptions, logger);
                         break;
                     default:
                         throw new InvalidOperationException($"Collection Type {collectionType} not valid for Multi Versioning");
@@ -240,7 +244,7 @@ namespace Emby.Naming.Video
                    || CheckMovieMultiVersionRegex().IsMatch(testFilename);
         }
 
-        private static List<VideoInfo> GetShowsGroupedByVersion(List<VideoInfo> videos, NamingOptions namingOptions)
+        private static List<VideoInfo> GetShowsGroupedByVersion(List<VideoInfo> videos, NamingOptions namingOptions, ILogger? logger)
         {
             // if we dont have at least two video files, then there's no point in going further.
             if (videos.Count <= 1)
@@ -269,7 +273,7 @@ namespace Emby.Naming.Video
                      multiVersionMatch = CheckEpisodeMultiVersionRegex().Match(video.Files[0].FileNameWithoutExtension.ToString());
                      if (multiVersionMatch.Success)
                      {
-                         episodesWithUnsortedVersions.Add(GetCompleteEpisodeWithUnsortedVersions(video, videos, multiVersionMatch));
+                         episodesWithUnsortedVersions.Add(GetCompleteEpisodeWithUnsortedVersions(video, videos, multiVersionMatch, logger));
                          break;
                      }
                  }
@@ -278,14 +282,18 @@ namespace Emby.Naming.Video
             return multiVersionMatch.Success ? SortEpisodeVersions(episodesWithUnsortedVersions) : videos;
         }
 
-        private static VideoInfo GetCompleteEpisodeWithUnsortedVersions(VideoInfo video, List<VideoInfo> videos, Match parsedEpisodeFilename)
+        private static VideoInfo GetCompleteEpisodeWithUnsortedVersions(VideoInfo video, List<VideoInfo> videos, Match parsedEpisodeFilename, ILogger? logger)
         {
-            // TODO: check for more than 2 alternate versions and log warning if found, possible incompatible file naming scheme.
             var baseEpisodeName = parsedEpisodeFilename.Groups["baseEpisode"].Value;
 
             var matchingVideos = videos
                 .Where(v => v.Files[0].FileNameWithoutExtension.Contains(baseEpisodeName, StringComparison.OrdinalIgnoreCase))
                 .ToList();
+
+            if (matchingVideos.Count > 2)
+            {
+                logger?.LogWarning("Found more than 2 versions for episode {EpisodeName}. This might indicate an incompatible file naming scheme.", baseEpisodeName);
+            }
 
             var matchingFiles = matchingVideos
                 .SelectMany(v => v.Files)
