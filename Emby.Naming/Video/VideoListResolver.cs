@@ -246,108 +246,124 @@ namespace Emby.Naming.Video
 
         private static List<VideoInfo> GetShowsGroupedByVersion(List<VideoInfo> videos, NamingOptions namingOptions, ILogger? logger)
         {
-            // if we dont have at least two video files, then there's no point in going further.
             if (videos.Count <= 1)
             {
                 return videos;
             }
 
-            var episodesWithUnsortedVersions = new List<VideoInfo>();
+            // Group all files by an "episode base key" so we don't mess with the input list.
+            var groups = new Dictionary<string, (string? Name, int? Year, List<VideoFileInfo> Files)>(StringComparer.OrdinalIgnoreCase);
 
-            Match multiVersionMatch;
-            int i = 0;
-            while (i < videos.Count)
+            // Each VideoInfo here is a single episode candidate, without any alternate versions set, and only one File Property.
+            foreach (var v in videos)
             {
-                var video = videos[i];
-                // A match here is not a guarantee that we have a multi version situation,
-                // because server admins sometimes use " - " to separate episode
-                // information like a title. But we need to pick
-                // a specific episode to start working on, so find one that
-                // *could* be a multi version, and process it
-                multiVersionMatch = CheckEpisodeMultiVersionRegex().Match(video.Files[0].FileNameWithoutExtension.ToString());
-                if (multiVersionMatch.Success)
+                if (v.Files.Count == 0)
                 {
-                    episodesWithUnsortedVersions.Add(GetCompleteEpisodeWithUnsortedVersions(video, videos, multiVersionMatch, logger));
-                    // Do not increment i here. The helper method removed items from 'videos',
-                    // so the list has shifted. We need to check the item at the current index again.
+                    continue;
+                }
+
+                var (baseEpisodeKey, _) = GetEpisodeKeyAndVersion(v.Files[0]);
+
+                if (!groups.TryGetValue(baseEpisodeKey, out var episodeBuilder))
+                {
+                    episodeBuilder = (v.Name, v.Year, new List<VideoFileInfo>());
+                    groups[baseEpisodeKey] = episodeBuilder;
+                }
+
+                episodeBuilder.Files.Add(v.Files[0]);
+            }
+
+            var result = new List<VideoInfo>(groups.Count);
+
+            foreach (var kvp in groups)
+            {
+                var baseEpisodeKey = kvp.Key;
+                var episodeBuilder = kvp.Value;
+                if (episodeBuilder.Files.Count > 2)
+                {
+                    logger?.LogWarning("Found more than 2 versions for episode {EpisodeName}. This might indicate an incompatible file naming scheme.", baseEpisodeKey);
+                }
+
+                var ordered = SortEpisodeVersionFiles(episodeBuilder.Files);
+                var primary = ChoosePrimaryEpisodeFile(ordered, baseEpisodeKey);
+
+                var alternates = ordered.Where(f => !ReferenceEquals(f, primary)).ToArray();
+
+                var completeEpisodeWithVersions = new VideoInfo(episodeBuilder.Name)
+                {
+                    Year = episodeBuilder.Year,
+                    Files = new[] { primary },
+                    AlternateVersions = alternates
+                };
+
+                result.Add(completeEpisodeWithVersions);
+            }
+
+            // I dont think we need to sort the video infos, right?
+            // Keep ordering predictable by episode name.
+            // result.Sort((a, b) => string.Compare(a.Name, b.Name, StringComparison.OrdinalIgnoreCase));
+            return result;
+        }
+
+        // Splits a filename into an "episode base key" and an optional version tag.
+        // TODO: consider removing the VersionTag return result
+        private static (string BaseKey, string? VersionTag) GetEpisodeKeyAndVersion(VideoFileInfo file)
+        {
+            var name = file.FileNameWithoutExtension.ToString();
+            var m = CheckEpisodeMultiVersionRegex().Match(name);
+
+            if (m.Success)
+            {
+                var baseEpisode = m.Groups["baseEpisode"].Value;
+                var version = m.Groups["Version"].Success ? m.Groups["Version"].Value : null;
+                return (baseEpisode, version);
+            }
+
+            // No explicit version tag; the whole name is the base key.
+            return (name, null);
+        }
+
+        // Reuse the same sorting philosophy as movies: resolution first (desc), then alphanumeric.
+        private static List<VideoFileInfo> SortEpisodeVersionFiles(IEnumerable<VideoFileInfo> files)
+        {
+            var list = files.ToList();
+            if (list.Count <= 1)
+            {
+                return list;
+            }
+
+            var groups = list.GroupBy(x => ResolutionRegex().IsMatch(x.FileNameWithoutExtension));
+            var ordered = new List<VideoFileInfo>(list.Count);
+
+            foreach (var group in groups.OrderByDescending(g => g.Key)) // true first
+            {
+                if (group.Key)
+                {
+                    ordered.AddRange(
+                        group
+                            .OrderByDescending(x => ResolutionRegex().Match(x.FileNameWithoutExtension.ToString()).Value, new AlphanumericComparator())
+                            .ThenBy(x => x.FileNameWithoutExtension.ToString(), new AlphanumericComparator()));
                 }
                 else
                 {
-                    i++;
+                    ordered.AddRange(
+                        group.OrderBy(x => x.FileNameWithoutExtension.ToString(), new AlphanumericComparator()));
                 }
             }
 
-            // Add any remaining videos that were not grouped
-            episodesWithUnsortedVersions.AddRange(videos);
-
-            return SortEpisodeVersions(episodesWithUnsortedVersions);
+            return ordered;
         }
 
-        private static VideoInfo GetCompleteEpisodeWithUnsortedVersions(VideoInfo video, List<VideoInfo> videos, Match parsedEpisodeFilename, ILogger? logger)
+        private static VideoFileInfo ChoosePrimaryEpisodeFile(IReadOnlyList<VideoFileInfo> orderedFiles, string baseKey)
         {
-            var baseEpisodeName = parsedEpisodeFilename.Groups["baseEpisode"].Value;
-
-            var matchingVideos = videos
-                .Where(v => v.Files[0].FileNameWithoutExtension.Contains(baseEpisodeName, StringComparison.OrdinalIgnoreCase))
-                .ToList();
-
-            if (matchingVideos.Count > 2)
+            var exact = orderedFiles.FirstOrDefault(f =>
+                f.FileNameWithoutExtension.Equals(baseKey, StringComparison.OrdinalIgnoreCase));
+            if (exact is not null)
             {
-                logger?.LogWarning("Found more than 2 versions for episode {EpisodeName}. This might indicate an incompatible file naming scheme.", baseEpisodeName);
+                exact.Name = "Default";
             }
 
-            var matchingFiles = matchingVideos
-                .SelectMany(v => v.Files)
-                .ToList();
-
-            var episodeWithUnsortedVersionFiles = new VideoInfo(video.Name)
-            {
-                Year = video.Year,
-                Files = matchingFiles
-            };
-
-            foreach (var matchingVideo in matchingVideos)
-            {
-                videos.Remove(matchingVideo);
-            }
-
-            return episodeWithUnsortedVersionFiles;
+            return exact ?? orderedFiles[0];
         }
-
-        private static List<VideoInfo> SortEpisodeVersions(List<VideoInfo> episodes)
-        {
-            return episodes;
-        }
-
-// comment
-//           if (videos.Count > 1)
-//            {
-//                var groups = videos.GroupBy(x => ResolutionRegex().IsMatch(x.Files[0].FileNameWithoutExtension)).ToList();
-//                videos.Clear();
-//                foreach (var group in groups)
-//                {
-//                    if (group.Key)
-//                    {
-//                        videos.InsertRange(0, group
-//                            .OrderByDescending(x => ResolutionRegex().Match(x.Files[0].FileNameWithoutExtension.ToString()).Value, new AlphanumericComparator())
-//                            .ThenBy(x => x.Files[0].FileNameWithoutExtension.ToString(), new AlphanumericComparator()));
-//                    }
-//                    else
-//                    {
-//                        videos.AddRange(group.OrderBy(x => x.Files[0].FileNameWithoutExtension.ToString(), new AlphanumericComparator()));
-//                    }
-//                }
-//            }
-//
-//            primary ??= videos[0];
-//            videos.Remove(primary);
-//
-//            var list = new List<VideoInfo>
-//            {
-//                primary
-//            };
-//
-//            list[0].AlternateVersions = videos.Select(x => x.Files[0]).ToArray();
-//            list[0].Name = folderName.ToString();
     }
 }
