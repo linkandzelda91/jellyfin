@@ -107,17 +107,14 @@ namespace Emby.Naming.Video
 
             if (supportMultiVersion)
             {
-                // TODO: music videos need to be supported.
-                switch (collectionType)
+                // do I even need namingOptions?
+                if (collectionType == CollectionType.tvshows)
                 {
-                    case CollectionType.movies:
-                        list = GetMoviesGroupedByVersion(list, namingOptions);
-                        break;
-                    case CollectionType.tvshows:
-                        list = GetShowsGroupedByVersion(list, namingOptions, logger);
-                        break;
-                    default:
-                        throw new InvalidOperationException($"Collection Type {collectionType} not valid for Multi Versioning");
+                    list = GetShowsGroupedByVersion(list, namingOptions, logger);
+                }
+                else
+                {
+                    list = GetMoviesAndMusicVideosGroupedByVersion(list, namingOptions);
                 }
             }
 
@@ -132,7 +129,7 @@ namespace Emby.Naming.Video
             return list;
         }
 
-        private static List<VideoInfo> GetMoviesGroupedByVersion(List<VideoInfo> videos, NamingOptions namingOptions)
+        private static List<VideoInfo> GetMoviesAndMusicVideosGroupedByVersion(List<VideoInfo> videos, NamingOptions namingOptions)
         {
             if (videos.Count == 0)
             {
@@ -244,9 +241,12 @@ namespace Emby.Naming.Video
                    || CheckMovieMultiVersionRegex().IsMatch(testFilename);
         }
 
+        // Setup a dictionary of temporary episodeBuilder objects for each episode using the regex match for baseEpisode identifer,
+        // adding all the files that are the same Episode to the Files list. Process them and build the final VideoInfo objects
+        // before returning a list of VideoInfos with the versions set.
         private static List<VideoInfo> GetShowsGroupedByVersion(List<VideoInfo> videos, NamingOptions namingOptions, ILogger? logger)
         {
-            if (videos.Count <= 1)
+            if (videos.Count < 2)
             {
                 return videos;
             }
@@ -262,7 +262,12 @@ namespace Emby.Naming.Video
                     continue;
                 }
 
-                var (baseEpisodeKey, _) = GetEpisodeKeyAndVersion(v.Files[0]);
+                var (baseEpisodeKey, version) = GetEpisodeKeyAndVersion(v.Files[0]);
+                // Name will be used during the sorting, so set it to the clean version match.
+                if (version is not null)
+                {
+                    v.Files[0].Name = version;
+                }
 
                 if (!groups.TryGetValue(baseEpisodeKey, out var episodeBuilder))
                 {
@@ -279,6 +284,8 @@ namespace Emby.Naming.Video
             {
                 var baseEpisodeKey = kvp.Key;
                 var episodeBuilder = kvp.Value;
+                // TODO fix this log statemen
+                // Just in case things go wrong when trying to identify groups due to an unsupported and untested naming scheme.
                 if (episodeBuilder.Files.Count > 2)
                 {
                     logger?.LogWarning("Found more than 2 versions for episode {EpisodeName}. This might indicate an incompatible file naming scheme.", baseEpisodeKey);
@@ -299,15 +306,11 @@ namespace Emby.Naming.Video
                 result.Add(completeEpisodeWithVersions);
             }
 
-            // I dont think we need to sort the video infos, right?
-            // Keep ordering predictable by episode name.
-            // result.Sort((a, b) => string.Compare(a.Name, b.Name, StringComparison.OrdinalIgnoreCase));
             return result;
         }
 
         // Splits a filename into an "episode base key" and an optional version tag.
-        // TODO: consider removing the VersionTag return result
-        private static (string BaseKey, string? VersionTag) GetEpisodeKeyAndVersion(VideoFileInfo file)
+        private static (string BaseEpisode, string? VersionTag) GetEpisodeKeyAndVersion(VideoFileInfo file)
         {
             var name = file.FileNameWithoutExtension.ToString();
             var m = CheckEpisodeMultiVersionRegex().Match(name);
@@ -323,31 +326,31 @@ namespace Emby.Naming.Video
             return (name, null);
         }
 
-        // Reuse the same sorting philosophy as movies: resolution first (desc), then alphanumeric.
         private static List<VideoFileInfo> SortEpisodeVersionFiles(IEnumerable<VideoFileInfo> files)
         {
             var list = files.ToList();
+            // No point in sorting if we only have 1 file.
             if (list.Count <= 1)
             {
                 return list;
             }
 
-            var groups = list.GroupBy(x => ResolutionRegex().IsMatch(x.FileNameWithoutExtension));
+            var groups = list.GroupBy(v => ResolutionRegex().IsMatch(v.Name));
             var ordered = new List<VideoFileInfo>(list.Count);
 
-            foreach (var group in groups.OrderByDescending(g => g.Key)) // true first
+            foreach (var group in groups.OrderByDescending(g => g.Key))
             {
                 if (group.Key)
                 {
                     ordered.AddRange(
                         group
-                            .OrderByDescending(x => ResolutionRegex().Match(x.FileNameWithoutExtension.ToString()).Value, new AlphanumericComparator())
-                            .ThenBy(x => x.FileNameWithoutExtension.ToString(), new AlphanumericComparator()));
+                            .OrderByDescending(v => ResolutionRegex().Match(v.FileNameWithoutExtension.ToString()).Value, new AlphanumericComparator())
+                            .ThenBy(v => v.FileNameWithoutExtension.ToString(), new AlphanumericComparator()));
                 }
                 else
                 {
                     ordered.AddRange(
-                        group.OrderBy(x => x.FileNameWithoutExtension.ToString(), new AlphanumericComparator()));
+                        group.OrderBy(v => v.FileNameWithoutExtension.ToString(), new AlphanumericComparator()));
                 }
             }
 
@@ -358,11 +361,6 @@ namespace Emby.Naming.Video
         {
             var exact = orderedFiles.FirstOrDefault(f =>
                 f.FileNameWithoutExtension.Equals(baseKey, StringComparison.OrdinalIgnoreCase));
-            if (exact is not null)
-            {
-                exact.Name = "Default";
-            }
-
             return exact ?? orderedFiles[0];
         }
     }
